@@ -1,98 +1,187 @@
-"""창문 개폐 액추에이터: DC 모터(또는 리니어 액추에이터) + L298N + 리밋 스위치 2개.
-
-set() 은 모터를 돌리기 시작하고 바로 반환한다.
-리밋 스위치가 눌리면 gpiozero 콜백에서 모터를 멈추고,
-스위치가 고장 나도 모터가 계속 돌지 않도록 타임아웃으로 강제 정지한다.
-"""
+"""Serialized motor worker with limit feedback, reversal pause and latched faults."""
 
 from __future__ import annotations
 
-import logging
+import math
 import threading
+import time
+from contextlib import ExitStack
 
 from gpiozero import Button, Motor
 
 from .. import pins
-from ..types import WINDOW
-
-log = logging.getLogger(__name__)
+from ..types import WINDOW, HardwareFault
 
 
 class WindowActuator:
     name = WINDOW
 
-    def __init__(self, speed: float = 0.8, timeout: float = 15.0) -> None:
-        self._motor = Motor(
-            forward=pins.WINDOW_MOTOR_IN1,
-            backward=pins.WINDOW_MOTOR_IN2,
-            enable=pins.WINDOW_MOTOR_ENA,
-        )
-        self._open_sw = Button(pins.WINDOW_LIMIT_OPEN, pull_up=True)
-        self._closed_sw = Button(pins.WINDOW_LIMIT_CLOSED, pull_up=True)
-        self._speed = speed
-        self._timeout = timeout
-        self._lock = threading.Lock()
-        self._target: bool | None = None
-        self._timer: threading.Timer | None = None
-
-        self._open_sw.when_pressed = lambda: self._on_limit(True)
-        self._closed_sw.when_pressed = lambda: self._on_limit(False)
+    def __init__(
+        self,
+        speed=0.8,
+        timeout=15.0,
+        *,
+        reverse_pause=0.1,
+        motor=None,
+        open_switch=None,
+        closed_switch=None,
+        obstruction=None,
+    ):
+        if not math.isfinite(speed) or not 0 < speed <= 1:
+            raise ValueError("speed must be in (0, 1]")
+        if (
+            not math.isfinite(timeout)
+            or timeout <= 0
+            or not math.isfinite(reverse_pause)
+            or reverse_pause < 0
+        ):
+            raise ValueError("invalid timeout/reverse_pause")
+        self._resources = ExitStack()
+        try:
+            self._motor = (
+                motor
+                if motor is not None
+                else Motor(
+                    forward=pins.WINDOW_MOTOR_IN1,
+                    backward=pins.WINDOW_MOTOR_IN2,
+                    enable=pins.WINDOW_MOTOR_ENA,
+                )
+            )
+            self._resources.callback(self._motor.close)
+            self._open_sw = (
+                open_switch
+                if open_switch is not None
+                else Button(pins.WINDOW_LIMIT_OPEN, pull_up=True, bounce_time=0.01)
+            )
+            self._resources.callback(self._open_sw.close)
+            self._closed_sw = (
+                closed_switch
+                if closed_switch is not None
+                else Button(pins.WINDOW_LIMIT_CLOSED, pull_up=True, bounce_time=0.01)
+            )
+            self._resources.callback(self._closed_sw.close)
+            self._motor.stop()
+        except BaseException:
+            self._resources.close()
+            raise
+        self._speed, self._timeout, self._pause = speed, timeout, reverse_pause
+        self._obstruction = obstruction  # callable returning True while obstructed
+        self._lock = threading.RLock()
+        self._quit = threading.Event()
+        self._target = None
+        self._direction = None
+        self._last_direction = None
+        self._stopped_at = time.monotonic()
+        self._started = 0.0
+        self.fault = None
+        self._closed = False
+        self._thread = threading.Thread(target=self._run, daemon=True, name="roomcare-window")
+        self._thread.start()
 
     @property
-    def is_on(self) -> bool:
-        """완전히 열린 상태(열림 리밋 스위치 눌림)일 때만 True."""
-        return self._open_sw.is_pressed
-
-    @property
-    def is_moving(self) -> bool:
-        return self._motor.is_active
-
-    def set(self, on: bool) -> None:
+    def position(self):
         with self._lock:
-            at_target = self._open_sw.is_pressed if on else self._closed_sw.is_pressed
-            if at_target:
-                self._stop_locked()
-                return
-            if self.is_moving and self._target == on:
-                return  # 이미 그 방향으로 움직이는 중
+            a, b = self._open_sw.is_pressed, self._closed_sw.is_pressed
+            if self.fault or (a and b):
+                return "fault"
+            if self._direction is not None:
+                return "opening" if self._direction else "closing"
+            return "open" if a else "closed" if b else "unknown"
 
-            self._stop_locked()
+    @property
+    def is_on(self):
+        return self.position == "open"
+
+    @property
+    def is_moving(self):
+        with self._lock:
+            return self._target is not None  # includes queued/reversal phase
+
+    def set(self, on: bool):
+        if type(on) is not bool:
+            raise ValueError("on must be bool")
+        with self._lock:
+            if self._closed:
+                raise HardwareFault("window closed")
+            if self.fault:
+                raise HardwareFault(self.fault)
+            if self._open_sw.is_pressed and self._closed_sw.is_pressed:
+                self._fail("conflicting limit switches")
+                raise HardwareFault(self.fault)
             self._target = on
-            if on:
-                self._motor.forward(self._speed)
-            else:
-                self._motor.backward(self._speed)
-            self._timer = threading.Timer(self._timeout, self._on_timeout)
-            self._timer.daemon = True
-            self._timer.start()
-            log.info("window %s", "opening" if on else "closing")
 
-    def stop(self) -> None:
+    def stop(self):
         with self._lock:
-            self._stop_locked()
+            self._target = None
+            self._halt()
 
-    def close(self) -> None:
-        self.stop()
-        self._motor.close()
-        self._open_sw.close()
-        self._closed_sw.close()
-
-    # --- internal -------------------------------------------------------
-
-    def _on_limit(self, opened: bool) -> None:
+    def reset_fault(self):
         with self._lock:
-            if self._target == opened:
-                self._stop_locked()
-                log.info("window fully %s", "open" if opened else "closed")
+            if self._closed:
+                raise HardwareFault("window closed")
+            if self._open_sw.is_pressed and self._closed_sw.is_pressed:
+                raise HardwareFault("check limit wiring before reset")
+            if self._obstruction and self._obstruction():
+                raise HardwareFault("remove obstruction before reset")
+            self.stop()
+            self.fault = None  # explicit inspection/reset; never auto-restart on timeout
 
-    def _on_timeout(self) -> None:
-        with self._lock:
-            if self.is_moving:
-                self._stop_locked()
-                log.error("window motor timeout: limit switch not reached")
-
-    def _stop_locked(self) -> None:
+    def _halt(self):
         self._motor.stop()
-        if self._timer is not None:
-            self._timer.cancel()
-            self._timer = None
+        if self._direction is not None:
+            self._last_direction = self._direction
+            self._stopped_at = time.monotonic()
+        self._direction = None
+
+    def _fail(self, reason):
+        self.fault = reason
+        self._target = None
+        self._halt()
+
+    def _run(self):
+        while not self._quit.wait(0.01):
+            with self._lock:
+                try:
+                    a, b = self._open_sw.is_pressed, self._closed_sw.is_pressed
+                    if a and b:
+                        self._fail("conflicting limit switches")
+                    elif self._target is not None and not self.fault:
+                        if self._obstruction and self._obstruction():
+                            self._fail("obstruction detected")
+                        elif a if self._target else b:
+                            self._target = None
+                            self._halt()
+                        elif self._direction is not None and self._direction != self._target:
+                            self._halt()
+                        elif self._direction is None:
+                            reversing = (
+                                self._last_direction is not None
+                                and self._last_direction != self._target
+                            )
+                            if not reversing or time.monotonic() - self._stopped_at >= self._pause:
+                                self._direction = self._target
+                                self._started = time.monotonic()
+                                if self._direction:
+                                    self._motor.forward(self._speed)
+                                else:
+                                    self._motor.backward(self._speed)
+                        elif time.monotonic() - self._started >= self._timeout:
+                            self._fail("motor timeout: limit not reached")
+                except Exception as exc:
+                    self.fault = f"motor/input error: {exc}"
+                    self._target = None
+                    try:
+                        self._halt()
+                    except Exception as stop_exc:
+                        self.fault += f"; stop failed: {stop_exc}"
+                        self._direction = None
+
+    def close(self):
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._quit.set()
+            self.stop()
+        self._thread.join()
+        self._resources.close()

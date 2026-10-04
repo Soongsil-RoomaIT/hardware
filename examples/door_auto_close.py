@@ -1,47 +1,43 @@
-"""문 자동 닫기 테스트: 터치센서로 열림 감지 -> N초 뒤 서보로 닫기.
-
-    python examples/door_auto_close.py            # 10초 뒤 닫기
-    python examples/door_auto_close.py --delay 3
-    python examples/door_auto_close.py --push     # 센서 무시하고 서보 한 번만 스윙 (각도 조정용)
-"""
+"""Standalone tabletop door prototype. Do NOT run alongside Edge's policy."""
 
 import argparse
-import logging
 import time
+from contextlib import ExitStack
 
 from roomcare_hw.actuators import DoorAutoCloser, DoorCloserServo
 from roomcare_hw.sensors import TouchDoorSensor
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--delay", type=float, default=10.0, help="열림 후 닫기까지 대기(초)")
-    parser.add_argument("--push", action="store_true", help="서보 한 번만 스윙")
+    parser.add_argument("--delay", type=float, default=600.0)
+    parser.add_argument("--push", action="store_true", help="서보 한 번 시험")
+    parser.add_argument("--verified", action="store_true", help="센서 지속감지 및 기구 안전 확인")
     args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-
-    sensor = TouchDoorSensor()
-    closer = DoorCloserServo(sensor)
-
-    if args.push:
-        closer.push()
-        time.sleep(2.5)
-        closer.close()
-        sensor.close()
-        return
-
-    auto = DoorAutoCloser(sensor, closer, close_delay=args.delay)
-    print(f"door is {'OPEN' if sensor.is_open else 'CLOSED'}. Ctrl+C to quit.")
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        auto.stop()
-        closer.close()
-        sensor.close()
+    if not args.verified:
+        parser.error("탁상 모형에서 센서와 기구를 확인한 뒤 --verified를 사용하세요")
+    with ExitStack() as stack:
+        sensor = TouchDoorSensor(verified=True)
+        stack.callback(sensor.close)
+        closer = DoorCloserServo(sensor)
+        stack.callback(closer.close)
+        try:
+            if args.push:
+                closer.push()
+                while closer.is_moving:
+                    time.sleep(0.05)
+                if closer.fault:
+                    raise RuntimeError(closer.fault)
+                return
+            auto = DoorAutoCloser(sensor, closer, close_delay=args.delay)
+            stack.callback(auto.stop)
+            while True:
+                print(
+                    "door:", sensor.position, "attempts:", auto.attempts, "error:", auto.last_error
+                )
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":

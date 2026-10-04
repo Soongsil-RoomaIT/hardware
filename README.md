@@ -1,172 +1,144 @@
 # hardware
 
-자취방 원격 케어 시스템의 **센서·액추에이터** 파트 (역할 BC).
+자취방 원격 케어 시스템의 **B. 하드웨어(센서·액추에이터)** 구현입니다.
+요구사항 정의서와 SAD v1.0(2026-09-23)을 기준으로 작성했습니다.
 
-| 담당 | 내용 |
+**지금 가진 DHT11 온습도 센서와 DFR0030 터치센서부터 시작하려면
+[처음 연결하기](docs/dht11_window_touch.md)를 읽으세요.**
+
+이 저장소는 하드웨어 드라이버와 배선·제작·시험 문서를 제공합니다.
+실제 장비는 이 개발 환경에 연결되지 않았으므로, 프로그램 시험과 실제 하드웨어 합격을 구분합니다.
+
+## 1. edge_agent와의 약속 (인터페이스)
+
+| API | 동작 |
 |---|---|
-| 센서 배선 | 온습도, CO2, 미세먼지 센서를 Raspberry Pi 에 연결 |
-| 액추에이터 제작 | 창문 개폐, 공기청정기 On/Off, 문 자동 닫기 (Retrofit: 기존 창문·가전·문에 부착) |
-| 구동 드라이버 | 센서/액추에이터를 Python 으로 제어하는 코드 (이 레포) |
-| 문서 | 하드웨어 구성도 (배선도, 전원 구성, 부품 목록) |
+| `RoomSensorReader.read()` | SHT31 또는 DHT + SCD41 + PMS7003의 `Reading` 반환. 미장착·오류·오래된 값은 `OSError` (`IOError`와 동일) |
+| `CachedSensorReader.read()` | 백그라운드에서 수집한 값을 즉시 반환. 초기화 중·고장·유효기간 경과 시 예외 |
+| `DHTReader.read()` | 실습용 `PartialReading`. CO₂·PM2.5는 `None`, JSON에서는 `null` |
+| `TouchWindowSensor.position` | `unknown/open/closed`. 설치 검증 전에는 `unknown` |
+| `WindowActuator.position` | `unknown/open/closed/opening/closing/fault` |
+| `Actuator.set(bool)` | 백그라운드 동작 요청. 기구가 끝까지 움직이기를 기다리지 않음 |
+| `close()` | 작업 중단·GPIO/버스 해제. 소유자가 반드시 호출 |
 
-> 아래 부품 모델과 핀 배치는 **예시**입니다. 실제로 쓰는 부품에 맞게 바꾸고 이 문서도 같이 갱신하세요.
+`Reading`의 기존 다섯 필드(`measured_at`, `temperature`, `humidity`, `co2`, `pm25`)와
+기존 장치 이름 `window`, `air_purifier`, `door`를 유지했습니다.
+`dehumidifier`는 신규 장치입니다. 제습기 정책과 클라우드/UI 명령은 A/C/E 연동이 필요합니다.
 
----
+**실습용 `PartialReading`을 기존 Edge의 숫자 전용 저장·자동제어에 그대로 넣으면 안 됩니다.**
+전체 센서로 전환하거나 A 담당이 null/센서 품질 처리를 추가해야 합니다.
 
-## 1. edge_agent 와의 약속 (인터페이스)
+가전 토글 버튼은 시작 상태를 모르면 움직이지 않습니다. `initially_on` 또는 상태 피드백을 제공하세요.
+`is_on`은 일부 장치의 상태가 불확실하면 `HardwareFault`를 발생시킵니다.
+창문 `is_on=False`만으로 완전 닫힘을 판단하지 말고 `position`을 사용하세요.
+자세한 연동 예: [A 담당 전달 문서](docs/edge_integration.md).
 
-[`edge_agent`](https://github.com/Soongsil-RoomaIT/edge_agent) 가 이 레포의 드라이버를 불러서 씁니다.
-아래 형태만 지키면 엣지 쪽은 Mock 을 실제 드라이버로 바꿔 끼우기만 하면 됩니다.
-정의: [`roomcare_hw/types.py`](roomcare_hw/types.py)
+## 2. 부품
 
-```python
-@dataclass(frozen=True)
-class Reading:
-    measured_at: float   # unix time
-    temperature: float   # C
-    humidity: float      # %RH
-    co2: float           # ppm
-    pm25: float          # ug/m3
-
-class SensorReader:
-    def read(self) -> Reading: ...          # 실패 시 IOError
-
-class DoorSensor:
-    is_open: bool                           # 문 열림 여부
-
-class Actuator:
-    name: str                               # "window" | "air_purifier" | "door"
-    is_on: bool                             # 실제 상태 (창문: on = 완전히 열림, 문: on = 열림)
-    def set(self, on: bool) -> None: ...    # 동작을 시작하고 바로 반환 (블로킹 금지)
-```
-
-- `door` 는 서보가 **닫기만** 할 수 있습니다. `set(False)` = 닫기, `set(True)` 는 무시됩니다.
-
-- **`set()` 은 오래 걸리면 안 됩니다.** 엣지 에이전트는 0.5초마다 통신 상태를 확인해서 10초 안에 오프라인 모드로 전환해야 하므로, 모터가 다 돌 때까지 기다리면 안 됩니다. 동작은 백그라운드에서 끝냅니다.
-- `set()` 은 같은 값으로 여러 번 불려도 안전해야 합니다. 자동제어가 측정할 때마다 목표 상태를 다시 보냅니다.
-- 필드 이름·단위·액추에이터 이름을 바꿀 때는 **엣지 담당과 같이** 바꿉니다.
-
----
-
-## 2. 부품 (예시)
-
-| 용도 | 부품 | 인터페이스 | 비고 |
+| 상태 | 용도 | 지원 부품 | 설명 |
 |---|---|---|---|
-| 온습도 | SHT31 | I2C (0x44) | DHT22 도 가능하지만 정확도/안정성은 SHT31 이 좋음 |
-| CO2 | SCD41 | I2C (0x62) | NDIR 방식. 전원 인가 후 값이 안정되기까지 수 분 |
-| 미세먼지 | PMS7003 | UART 9600bps | 5V 전원, 신호는 3.3V |
-| 창문 | DC 기어모터 or 리니어 액추에이터 + L298N | GPIO | 리밋 스위치 2개 (열림/닫힘) 필수 |
-| 공기청정기 | SG90 / MG90S 서보 | GPIO (PWM) | 전원 버튼을 물리적으로 누름 |
-| 문 열림 감지 | TTP223 터치센서 | GPIO (디지털) | 문이 닫히면 문짝(금속 테이프)이 패드에 닿도록 설치 |
-| 문 닫기 | MG996R 등 고토크 서보 | GPIO (PWM) | 문을 밀어야 하므로 SG90 은 힘이 부족. 문 무게에 맞게 선정 |
-| 전원 | 12V 어댑터 (모터용) + Pi 전용 5V | | **모터 전원을 Pi 5V 핀에서 끌어오지 말 것** |
+| 사용자 보유 | 온습도 | DHT11 3핀 모듈 | 기본 GPIO4. DHT22도 모델 옵션으로 지원 |
+| 사용자 보유 | 창문 상태 실습 | DFR0030 터치 | GPIO24. 장시간 창문 감지 실험 필수 |
+| 보유했으나 이번 창문 감지에서 미사용 | 거리 | HC-SR04 | 현재 요구에 사용하지 않아 연결하지 않음 |
+| 선택/추가 | 정밀 온습도 | SHT31 브레이크아웃 | I2C 0x44 |
+| 추가 | CO₂ | SCD41 브레이크아웃 | I2C 0x62, 첫 주기 측정 대기 필요 |
+| 추가 | 미세먼지 | PMS7003 + 전용 케이블/어댑터 | UART, atmospheric PM2.5 사용 |
+| 추가 | 창문 | DC 기어모터/리니어 액추에이터 + 적합한 드라이버 | 기존 L298N 배선 지원, 리밋 2개 필수 |
+| 추가 | 가전 버튼 | SG90/MG90S 등 서보 1개씩 | 공기청정기/제습기 버튼에 탈부착 |
+| 추가 | 현관문 모형 | 별도 상태 센서 + 토크 선정한 서보 | 창문 터치센서와 다른 입력(GPIO23) |
+| 추가 | 전원/기구 | Pi 전용 전원, 외부 서보/모터 전원, 브래킷·퓨즈·정지 스위치 | 모델/정격을 확인한 뒤 확정 |
 
-공기청정기 대안: 스마트 플러그(전원 차단 방식, 기기가 전원 복귀 시 자동 켜짐일 때만), IR 송신기(리모컨 지원 기기).
+모델이 확정되지 않은 기구의 치수·토크·구매 가격을 임의로 확정하지 않았습니다.
+실제 현관문은 출입·끼임·대피 문제가 있으므로 먼저 탁상 모형으로 검증합니다.
 
----
+## 3. 배선 및 하드웨어 구성도
 
-## 3. 배선 (BCM 번호, [`roomcare_hw/pins.py`](roomcare_hw/pins.py))
-
-| 장치 | 장치 핀 | Pi 핀 |
-|---|---|---|
-| SHT31, SCD41 | SDA / SCL | GPIO2 (핀 3) / GPIO3 (핀 5) — 같은 I2C 버스 공유 |
-| SHT31, SCD41 | VCC / GND | 3.3V (핀 1) / GND |
-| PMS7003 | TX → | GPIO15 RXD (핀 10) |
-| PMS7003 | RX ← | GPIO14 TXD (핀 8) |
-| PMS7003 | VCC / GND | 5V (핀 2) / GND |
-| L298N | IN1 / IN2 / ENA | GPIO17 / GPIO27 / GPIO22 |
-| L298N | 12V / GND | 모터용 어댑터 (+), **GND 는 Pi GND 와 공통** |
-| 리밋 스위치 (열림) | 한쪽 → GPIO5, 다른 쪽 → GND | 내부 풀업 사용 |
-| 리밋 스위치 (닫힘) | 한쪽 → GPIO6, 다른 쪽 → GND | 내부 풀업 사용 |
-| 서보 (공기청정기) | 신호 / VCC / GND | GPIO18 / 외부 5V / GND (공통) |
-| TTP223 (문) | OUT / VCC / GND | GPIO23 / 3.3V / GND |
-| 서보 (문 닫기) | 신호 / VCC / GND | GPIO13 / 외부 5~6V / GND (공통) |
-
-주의
-- Pi GPIO 는 **3.3V** 입니다. 5V 신호를 GPIO 에 직접 넣지 마세요.
-- 모터/서보 전원과 Pi 전원은 분리하고 **GND 만 공통**으로 묶습니다.
-- 창문은 닫힐 때 손이 끼일 수 있으니, 처음에는 모터를 창문에서 떼고 방향·리밋 스위치부터 확인하세요.
-- 고토크 서보(MG996R)는 순간 전류가 1A 이상이라 **반드시 외부 전원**을 씁니다.
-
-### 문 자동 닫기 동작
-
-```
-터치센서 떨어짐(문 열림) ─ close_delay(기본 10초) 대기 ─┬─ 그 사이 닫힘 → 취소
-                                                      └─ 여전히 열림 → 서보 스윙(밀기 → 복귀)
-                                                            └─ 3초 뒤에도 열림 → 재시도 (최대 3회)
-```
-
-- 사람이 드나드는 동안 바로 닫지 않도록 지연을 둡니다.
-- 스윙 후 서보 신호를 끊어서(detach), 사람이 문을 열 때 서보가 버티지 않습니다.
-- 3회 실패하면 포기하고 에러 로그를 남깁니다 (문이 걸렸거나 서보 힘 부족).
-
-구성도(배선도 이미지, 전원 구성도, 부품 목록/가격)는 `docs/` 에 추가합니다.
-
----
+- [초보자용 브레드보드 구멍 좌표](docs/dht11_window_touch.md)
+- [전체 핀표·전원·구성도·기구 제작](docs/hardware_design.md)
+- GPIO27은 창문 모터 IN2입니다. **창문 터치센서는 GPIO24(물리 18번)**입니다.
+- 모든 GPIO 신호는 3.3V 기준입니다. 모터·서보는 외부 전원을 사용하고 GND를 공통 연결합니다.
+- 창문 터치센서는 전동 창문의 끝점 리밋 스위치 2개를 대체하지 않습니다.
 
 ## 4. 라즈베리파이 설정
 
-```bash
-sudo raspi-config
-#  Interface Options -> I2C -> Enable
-#  Interface Options -> Serial Port -> 로그인 셸: No, 시리얼 하드웨어: Yes
-sudo reboot
+Windows PC는 코드 편집/모의시험, 실제 센서 코드는 **Raspberry Pi OS**에서 실행합니다.
+Python 3.11 이상, 40핀 헤더 기준입니다. Pi 모델/OS에 따라 GPIO·UART 설정은 현물 확인이 필요합니다.
 
-sudo apt install -y i2c-tools python3-lgpio python3-venv
-i2cdetect -y 1          # 0x44 (SHT31), 0x62 (SCD41) 가 보이면 배선 OK
+```bash
+sudo apt update
+sudo apt install -y python3-venv python3-pip python3-lgpio i2c-tools
 ```
+
+전체 센서를 붙일 때만 `sudo raspi-config`에서 I2C를 켜고,
+Serial의 로그인 셸은 끄고 시리얼 하드웨어는 켭니다. 변경 후 재부팅하세요.
+`i2cdetect -y 1`로 0x44/0x62를 확인하고, PMS의 포트가 `/dev/serial0`인지 확인합니다.
+센서 커넥터는 **전원을 끈 상태**에서 연결합니다.
 
 ## 5. 설치
 
 ```bash
 git clone https://github.com/Soongsil-RoomaIT/hardware.git
 cd hardware
-python3 -m venv --system-site-packages .venv   # apt 로 설치한 lgpio 를 쓰기 위해
-. .venv/bin/activate
-pip install -e .
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+python -m pip install -e '.[hardware]'
 ```
+
+이미 복제한 폴더라면 다시 clone하지 말고 그 안에서 `git pull --ff-only`로 갱신합니다.
+실제 Pi용 Adafruit 라이브러리는 `[hardware]` 옵션에 들어 있습니다.
+
+PC 모의시험은 `python -m pip install -e '.[dev]'`만으로 가능합니다.
 
 ## 6. 예제 실행
 
 ```bash
-python examples/read_sensors.py            # 2초마다 센서값 출력
-python examples/test_actuators.py window open
-python examples/test_actuators.py window close
-python examples/test_actuators.py purifier on
-python examples/door_auto_close.py --push        # 서보 한 번 스윙 (각도 조정용)
-python examples/door_auto_close.py --delay 3     # 문 열고 3초 뒤 자동 닫기
+# 현재 보유 센서. CO2/PM은 null, 창문은 검증 전 unknown
+python examples/read_dht11_window_touch.py
+
+# 실제 창문 닫힘/열림과 지속 출력이 일치하는지 검증한 다음에만
+python examples/read_dht11_window_touch.py --verified
+
+# 모든 센서가 있을 때. SHT31 대신 DHT11을 유지하려면 아래 옵션
+python examples/read_sensors.py --temperature-model DHT11
+
+# 모터/서보를 기구에서 분리한 시험
+python examples/test_actuators.py window open --bench-confirmed
+python examples/test_actuators.py purifier on --current off --bench-confirmed
+python examples/test_actuators.py dehumidifier off --current on --bench-confirmed
+
+# 별도 현관문 모형: 기본 연속 열림 600초, --delay 3은 실험용
+python examples/door_auto_close.py --verified
+
+# PC에서 실제 부품 없이 실행
+python examples/simulate_hardware.py
+python -m pytest -q
 ```
 
----
+Ctrl+C로 종료합니다. 프로그램이 강제 종료되거나 Pi가 멈춘 상황까지 소프트웨어만으로
+보장할 수는 없습니다. 모터 전원 정지 장치/하드웨어 리밋은 구성도 문서를 따릅니다.
 
 ## 7. 코드 구조
 
-```
-roomcare_hw/
-├── types.py              # edge_agent 와 약속한 인터페이스
-├── pins.py               # 핀 배치
-├── sensors/
-│   ├── pms7003.py        # 미세먼지 (UART 프레임 파싱)
-│   ├── room.py           # SHT31 + SCD41 + PMS7003 -> RoomSensorReader
-│   └── door.py           # TTP223 터치센서 문 열림 감지
-└── actuators/
-    ├── window.py         # 모터 + 리밋 스위치 (비블로킹, 타임아웃 정지)
-    ├── air_purifier.py   # 서보로 전원 버튼 누르기
-    └── door_closer.py    # 서보로 문 닫기 + 자동 닫기(지연, 재시도)
-examples/
-├── read_sensors.py
-├── test_actuators.py
-└── door_auto_close.py
-```
+| 위치 | 내용 |
+|---|---|
+| `roomcare_hw/types.py`, `pins.py` | 데이터 계약, 오류, GPIO 배치 |
+| `roomcare_hw/sensors/` | DHT, SHT31/SCD41/PMS7003 통합, 터치, 비동기 캐시 |
+| `roomcare_hw/actuators/` | 창문 모터, 공기청정기/제습기 버튼, 문 닫기 |
+| `roomcare_hw/bundle.py` | 장치 생성·상태 조회·역순 자원 해제 |
+| `examples/` | 보유 센서, 전체 센서, 수동 기구 시험, PC 모의시험, Edge 진입점 |
+| `tests/` | 실제 하드웨어 없이 오류·시간 초과·동시 명령 검증 |
+| `docs/` | 배선, 기구 제작, 요구사항 추적, 인수시험, A 연동 |
 
-## 8. 할 일
+## 8. 완료 범위와 남은 실물 작업
 
-- [ ] 부품 확정 및 구매 (이 문서 부품표 갱신)
-- [ ] 센서 하나씩 연결해서 `read_sensors.py` 로 값 확인
-- [ ] 창문 개폐 기구 제작 + 리밋 스위치 위치 조정
-- [ ] 공기청정기 버튼 누르는 서보 고정 + 각도(`press_angle`) 조정
-- [ ] 공기청정기 실제 상태 감지 방법 검토 (지금은 소프트웨어가 기억한 상태만 사용)
-- [ ] 터치센서 설치 위치 확정, `touched_means_closed` 방향 확인
-- [ ] 문 닫기 서보 고정 + 각도(`rest_angle`, `push_angle`) 조정, 서보 토크가 충분한지 확인
-- [ ] edge_agent 와 통합 테스트 (엣지 담당과 같이)
-- [ ] 하드웨어 구성도 작성 (`docs/`)
+- [x] 보유 센서용 실행 코드, 전체 센서 드라이버, 창문·가전·문 드라이버
+- [x] 비블로킹 명령, 반복 명령 처리, 시간 초과/모순된 리밋 오류 유지, 종료 처리
+- [x] B 하드웨어 구성도·핀표·브레드보드 좌표·기구 제작 순서
+- [x] 모의 장치를 이용한 회귀 테스트와 PC 시연
+- [ ] 실제 Pi 모델/OS 및 각 부품 모델 확인
+- [ ] 실제 배선·신호·온습도/CO₂/PM2.5 교차 확인
+- [ ] 창문·가전·현관문 기구 제작과 위치·각도·토크 조정
+- [ ] 상태 피드백/끼임 방지/하드웨어 정지 회로 검증
+- [ ] A/C/D/E와 MQTT·웹까지 이어지는 5초/10초 요구사항 통합 인수시험
+
+[요구사항 추적표](docs/requirements_traceability.md) · [시험 절차](docs/acceptance.md)

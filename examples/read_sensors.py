@@ -1,27 +1,24 @@
-"""센서 값 확인용. 2초마다 측정값을 출력한다.
+"""Full set: SHT31/DHT + SCD41 + PMS7003. Failures never become zero readings."""
 
-    python examples/read_sensors.py
-"""
-
+import argparse
+import json
 import time
+from dataclasses import asdict
 
-from roomcare_hw.sensors import RoomSensorReader
+from roomcare_hw.sensors import CachedSensorReader, RoomSensorReader
 
 
-def main() -> None:
-    reader = RoomSensorReader()
-    print("SCD41 warm-up... (첫 CO2 값까지 약 5초)")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--temperature-model", choices=["SHT31", "DHT11", "DHT22"], default="SHT31")
+    args = parser.parse_args()
+    reader = CachedSensorReader(RoomSensorReader(temperature_model=args.temperature_model))
     try:
         while True:
             try:
-                r = reader.read()
-                print(
-                    f"{time.strftime('%H:%M:%S')}  "
-                    f"temp {r.temperature:5.1f} C  hum {r.humidity:5.1f} %  "
-                    f"co2 {r.co2:6.0f} ppm  pm2.5 {r.pm25:5.1f} ug/m3"
-                )
-            except IOError as e:
-                print("read failed:", e)
+                print(json.dumps(asdict(reader.read()), allow_nan=False), flush=True)
+            except IOError as exc:
+                print("read unavailable:", exc, flush=True)
             time.sleep(2)
     except KeyboardInterrupt:
         pass

@@ -4,17 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "roomcare-hw"
-version = "0.1.0"
+version = "0.2.0"
 description = "자취방 원격 케어 시스템 센서/액추에이터 드라이버 (Raspberry Pi)"
 requires-python = ">=3.11"
 dependencies = [
     # GPIO 백엔드(lgpio)는 apt 로 설치하고 venv 를 --system-site-packages 로 만든다 (README 참고)
     "gpiozero>=2.0",
     "pyserial>=3.5",
-    "adafruit-blinka",
-    "adafruit-circuitpython-sht31d",
-    "adafruit-circuitpython-scd4x",
 ]
+
+[project.optional-dependencies]
+hardware = ["adafruit-blinka", "adafruit-circuitpython-sht31d", "adafruit-circuitpython-scd4x", "adafruit-circuitpython-dht"]
+dev = ["pytest>=8", "ruff>=0.9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
 
 [tool.setuptools.packages.find]
 include = ["roomcare_hw*"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

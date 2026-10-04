@@ -47,3 +47,19 @@ class Actuator(Protocol):
 WINDOW = "window"
 AIR_PURIFIER = "air_purifier"
 DOOR = "door"  # 닫기만 가능 (set(False))
+DEHUMIDIFIER = "dehumidifier"  # edge_agent의 명령 allowlist 확장이 필요
+
+
+@dataclass(frozen=True)
+class PartialReading:
+    """실습 전용. 미장착 센서를 0으로 위조하지 않는다. 기존 Reading과 별개."""
+
+    measured_at: float
+    temperature: float
+    humidity: float
+    co2: float | None = None
+    pm25: float | None = None
+
+
+class HardwareFault(RuntimeError):
+    """명령을 수행할 수 없는 상태. 사용자 점검/복구가 필요하다."""

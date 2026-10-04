@@ -21,3 +21,8 @@ DOOR_TOUCH = 23
 
 # 문 닫기 서보 (하드웨어 PWM 채널이 있는 GPIO13)
 DOOR_SERVO = 13
+
+# 보유 센서로 시작하는 실습 (창문 모터 IN2=27과 충돌하지 않음)
+DHT11_DATA = 4
+WINDOW_TOUCH = 24
+DEHUMIDIFIER_SERVO = 12

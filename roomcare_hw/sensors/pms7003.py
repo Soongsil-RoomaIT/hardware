@@ -1,45 +1,64 @@
-"""PMS7003 미세먼지 센서 (UART, 9600bps).
-
-센서가 약 1초마다 32바이트 프레임을 보낸다:
-    [0x42 0x4D][길이 2B][데이터 13 x 2B][체크섬 2B]
-체크섬 = 앞 30바이트의 합.
-"""
+"""PMS7003 active-mode frames: length/checksum validation and bounded resync."""
 
 from __future__ import annotations
 
+import math
 import struct
-
-import serial
+import time
 
 FRAME_LEN = 32
 START = b"\x42\x4d"
 
 
+def parse_frame(frame: bytes) -> float:
+    if len(frame) != FRAME_LEN or frame[:2] != START:
+        raise IOError("PMS7003: invalid frame header/size")
+    if int.from_bytes(frame[2:4], "big") != 28:
+        raise IOError("PMS7003: invalid frame length")
+    if sum(frame[:30]) != int.from_bytes(frame[30:32], "big"):
+        raise IOError("PMS7003: checksum mismatch")
+    if frame[29] != 0:
+        raise IOError(f"PMS7003: device error {frame[29]}")
+    return float(struct.unpack(">H", frame[12:14])[0])  # atmospheric PM2.5
+
+
 class PMS7003:
-    def __init__(self, port: str, timeout: float = 2.0) -> None:
-        self._serial = serial.Serial(port, baudrate=9600, timeout=timeout)
+    def __init__(self, port: str, timeout: float = 1.5, *, serial_port=None) -> None:
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be finite and positive")
+        if serial_port is None:
+            import serial
+
+            serial_port = serial.Serial(port, baudrate=9600, timeout=min(timeout, 0.1))
+        self._serial = serial_port
+        self._timeout = timeout
 
     def read_pm25(self) -> float:
-        """대기환경 기준(atmospheric) PM2.5 값 (ug/m3)."""
-        frame = self._read_frame()
-        # 데이터 워드: pm1_cf1, pm25_cf1, pm10_cf1, pm1_atm, pm25_atm, pm10_atm, ...
-        words = struct.unpack(">13H", frame[4:30])
-        return float(words[4])
-
-    def _read_frame(self) -> bytes:
-        # 버퍼에 오래된 프레임이 쌓여 있을 수 있으니 비우고 최신 프레임을 읽는다
+        # Discard queued stale frames; read a new one within ONE overall deadline.
         self._serial.reset_input_buffer()
-        for _ in range(10):
-            if self._serial.read(1) != START[:1] or self._serial.read(1) != START[1:]:
-                continue
-            rest = self._serial.read(FRAME_LEN - 2)
-            if len(rest) != FRAME_LEN - 2:
-                continue
-            frame = START + rest
-            checksum = struct.unpack(">H", frame[30:32])[0]
-            if sum(frame[:30]) == checksum:
-                return frame
-        raise IOError("PMS7003: valid frame not received")
+        end = time.monotonic() + self._timeout
+        buffer = bytearray()
+        while time.monotonic() < end:
+            self._serial.timeout = min(0.1, max(0, end - time.monotonic()))
+            buffer.extend(self._serial.read(32))
+            while buffer:
+                start = buffer.find(START)
+                if start < 0:
+                    buffer[:] = buffer[-1:] if buffer[-1:] == START[:1] else b""
+                    break
+                del buffer[:start]
+                if len(buffer) < 4:
+                    break
+                if buffer[2:4] != b"\x00\x1c":
+                    del buffer[0]
+                    continue
+                if len(buffer) < FRAME_LEN:
+                    break
+                try:
+                    return parse_frame(bytes(buffer[:FRAME_LEN]))
+                except IOError:
+                    del buffer[0]
+        raise IOError("PMS7003: no valid fresh frame before deadline")
 
     def close(self) -> None:
         self._serial.close()
