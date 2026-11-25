@@ -52,6 +52,33 @@
 
 ## 3. 배선 및 하드웨어 구성도
 
+### 현재 시연 구성: 서보 2개 + LED 3개
+
+서보 하나(버튼 서보)가 창문·공기청정기·제습기 명령마다 **같은 누름 동작**을 하고,
+누르는 동안 해당 기기의 LED 가 켜졌다가 서보 동작이 끝나면 꺼집니다. 다른 서보 하나는 문을 닫습니다.
+명령이 겹치면 서보가 하나라서 한 번에 하나씩 차례로 누릅니다. 핀 번호는 익스텐션 보드의 GPIO 표시 기준입니다.
+
+| 부품 | GPIO | 연결 |
+|---|---|---|
+| 버튼 서보 신호(노랑) | GPIO18 | 신호선과 GND 사이 10kΩ (끝난 뒤 떨림 방지) |
+| 문 서보 신호(노랑) | GPIO13 | 신호선과 GND 사이 10kΩ |
+| 서보 전원(빨강) / GND(갈색) | 5V / GND | 두 서보가 같이 움직이면 외부 5V 권장, GND 는 Pi 와 공통 |
+| 창문 LED | GPIO17 | GPIO → 330Ω → LED 긴 다리, 짧은 다리 → GND |
+| 제습기 LED | GPIO27 | 〃 |
+| 공기청정기 LED | GPIO22 | 〃 |
+| DHT11 DATA | GPIO4 | VCC 3.3V, DATA 와 3.3V 사이 4.7k~10kΩ |
+| 문 터치센서(DFR0030) 신호 | GPIO23 | VCC 3.3V. 터치 = 문 닫힘 |
+
+GPIO17/27/22 가 아래 모터 창문(L298N) 핀과 겹쳐서 두 구성은 같이 쓸 수 없습니다.
+I2C(GPIO2/3)와 UART(GPIO14/15)는 SCD41·PMS7003 을 위해 비워 둡니다.
+
+```bash
+python examples/test_button_panel.py all --bench-confirmed             # 창문 -> 공기청정기 -> 제습기
+python examples/test_button_panel.py all --together --bench-confirmed  # 동시에 보내도 하나씩 눌러야 정상
+```
+
+### 모터 창문 구성
+
 - [초보자용 브레드보드 구멍 좌표](docs/dht11_window_touch.md)
 - [전체 핀표·전원·구성도·기구 제작](docs/hardware_design.md)
 - GPIO27은 창문 모터 IN2입니다. **창문 터치센서는 GPIO24(물리 18번)**입니다.
