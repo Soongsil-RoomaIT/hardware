@@ -1,3 +1,5 @@
+> **이전 버전 참고용.** 현재 시연 기준은 [v1.4 DHT11·MC-38 배선](SAD_V1_4_DEMO.md)입니다.
+
 # DHT11 + DFR0030: 처음 연결하는 순서
 
 이 문서는 기존 가이드의 실행 코드를 실제 `examples/read_dht11_window_touch.py`로 옮긴 최신판입니다.

@@ -1,6 +1,7 @@
 """Door-closing prototype and optional 600-second standalone policy.
 
-Production policy belongs to C/A; do not run this controller alongside Edge policy.
+SAD v1.4: automatic-close policy belongs only to Edge (A).
+DoorAutoCloser remains a legacy standalone test; never start it in the live system.
 """
 
 from __future__ import annotations

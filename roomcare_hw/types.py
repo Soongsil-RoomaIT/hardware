@@ -52,13 +52,14 @@ DEHUMIDIFIER = "dehumidifier"  # edge_agent의 명령 allowlist 확장이 필요
 
 @dataclass(frozen=True)
 class PartialReading:
-    """실습 전용. 미장착 센서를 0으로 위조하지 않는다. 기존 Reading과 별개."""
+    """DHT-only measurement; absent CO2/PM fields are None, never fabricated zeros."""
 
     measured_at: float
     temperature: float
     humidity: float
     co2: float | None = None
     pm25: float | None = None
+    pm10: float | None = None
 
 
 class HardwareFault(RuntimeError):

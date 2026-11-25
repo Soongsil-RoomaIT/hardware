@@ -1,3 +1,5 @@
+> **이전 버전 참고용.** 현재 시연 기준은 [v1.4 A 담당 연동 계약](A_INTEGRATION_V1_4.md)입니다.
+
 # A 담당과 연결하는 방법
 
 2026-10-02에 확인한 `edge_agent/src/edge_agent/devices.py`, `agent.py`, `config.py`의
