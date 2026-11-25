@@ -3,6 +3,7 @@
 from contextlib import ExitStack
 
 from .actuators import DoorCloserServo, ServoButtonDehumidifier, ServoButtonPurifier, WindowActuator
+from .actuators.button_panel import ButtonServoPanel, button_devices
 from .sensors import (
     CachedSensorReader,
     DHTReader,
@@ -18,6 +19,10 @@ class HardwareBundle:
 
     starter=True is for standalone learning, not Edge's numeric Reading contract.
     Every enable flag means wiring and mechanics have been checked by the operator.
+
+    button_panel=True: 버튼 서보 하나(GPIO18)가 창문/공기청정기/제습기 버튼을 모두 누르고,
+    누르는 동안 기기별 LED(GPIO17/27/22)를 켠다. window_button/purifier/dehumidifier 로 쓸 기기를 고른다.
+    LED 핀이 창문 모터 핀과 겹쳐서 window_motor 와 같이 쓸 수 없다.
     """
 
     def __init__(
@@ -35,7 +40,16 @@ class HardwareBundle:
         dehumidifier=False,
         dehumidifier_initial=None,
         door_closer=False,
+        button_panel=False,
+        window_button=False,
+        window_initial=None,
     ):
+        if button_panel and window_motor:
+            raise ValueError("button_panel uses GPIO17/27/22 for LEDs; window_motor cannot be used")
+        if window_button and not button_panel:
+            raise ValueError("window_button requires button_panel")
+        if window_button and window_motor:
+            raise ValueError("choose window_button or window_motor")
         if door_closer and (not door_sensor or not door_verified):
             raise ValueError("door closer requires verified door sensor")
         if starter and temperature_model not in ("DHT11", "DHT22"):
@@ -63,14 +77,30 @@ class HardwareBundle:
                 self.door_sensor = self._own(TouchDoorSensor(verified=door_verified))
             if window_motor:
                 self.actuators[WINDOW] = self._own(WindowActuator())
-            if purifier:
-                self.actuators[AIR_PURIFIER] = self._own(
-                    ServoButtonPurifier(initially_on=purifier_initial)
-                )
-            if dehumidifier:
-                self.actuators[DEHUMIDIFIER] = self._own(
-                    ServoButtonDehumidifier(initially_on=dehumidifier_initial)
-                )
+            if button_panel:
+                if window_button or purifier or dehumidifier:
+                    # 패널은 먼저 등록해서 기기들보다 나중에 닫히게 한다 (ExitStack 은 역순)
+                    panel = self._own(ButtonServoPanel())
+                    devices = button_devices(
+                        panel,
+                        window=window_button,
+                        window_initial=window_initial,
+                        purifier=purifier,
+                        purifier_initial=purifier_initial,
+                        dehumidifier=dehumidifier,
+                        dehumidifier_initial=dehumidifier_initial,
+                    )
+                    for name, device in devices.items():
+                        self.actuators[name] = self._own(device)
+            else:
+                if purifier:
+                    self.actuators[AIR_PURIFIER] = self._own(
+                        ServoButtonPurifier(initially_on=purifier_initial)
+                    )
+                if dehumidifier:
+                    self.actuators[DEHUMIDIFIER] = self._own(
+                        ServoButtonDehumidifier(initially_on=dehumidifier_initial)
+                    )
             if door_closer:
                 self.actuators[DOOR] = self._own(DoorCloserServo(self.door_sensor))
         except BaseException:
@@ -91,7 +121,7 @@ class HardwareBundle:
                     result[label] = {"position": "unknown", "error": str(exc)}
         for name, device in self.actuators.items():
             try:
-                if name == WINDOW:
+                if name == WINDOW and hasattr(device, "position"):
                     state = device.position
                 elif name == DOOR:
                     state = "open" if device.is_on else "closed"
