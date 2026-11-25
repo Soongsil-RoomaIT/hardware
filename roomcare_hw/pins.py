@@ -4,13 +4,17 @@
 # UART (PMS7003)    - GPIO14 = TX, GPIO15 = RX  -> /dev/serial0
 PMS_SERIAL_PORT = "/dev/serial0"
 
-# --- 버튼 서보 구성 (현재 시연 구성) ------------------------------------------
-# 서보 하나가 창문/공기청정기/제습기 버튼을 모두 누른다. 누르는 동안 그 기기의 LED 가 켜진다.
+# --- SAD v1.4 LED 직접 제어 / 과거 버튼 서보 공용 핀 --------------------------
+# v1.4는 LED를 직접 제어한다. BUTTON_SERVO는 이전 버튼 패널용이다.
 # 두 서보는 하드웨어 PWM 채널이 다른 핀(18 = PWM0, 13 = PWM1)에 둔다.
 BUTTON_SERVO = 18
 LED_WINDOW = 17
 LED_DEHUMIDIFIER = 27
 LED_PURIFIER = 22
+
+# SAD v1.4: MC-38 (GPIO23, dry contact to GND), MQ-2 level-shifted DO.
+DOOR_MAGNETIC = 23
+MQ2_DO = 25
 
 # 문 닫기 서보 (하드웨어 PWM 채널이 있는 GPIO13)
 DOOR_SERVO = 13
