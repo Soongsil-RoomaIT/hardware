@@ -17,7 +17,10 @@ class DHTReader:
             import adafruit_dht
             import board
 
-            device = getattr(adafruit_dht, model)(getattr(board, f"D{pin}"), use_pulseio=False)
+            # Pulse capture avoids missed DHT11 responses with GPIO polling on Raspberry Pi.
+            device = getattr(adafruit_dht, model)(
+                getattr(board, f"D{pin}"), use_pulseio=(model == "DHT11")
+            )
         self._device = device
         self._last_attempt = float("-inf")
         self._last = None
