@@ -63,8 +63,8 @@ def test_led_is_lit_only_while_servo_moves():
 
     assert log == [
         ("on", AIR_PURIFIER),
-        ("angle", 35.0),
-        ("angle", 0.0),
+        ("angle", 85.0),
+        ("angle", -20.0),
         ("detach",),
         ("off", AIR_PURIFIER),
     ]
@@ -94,7 +94,7 @@ def test_every_device_uses_the_same_servo_with_its_own_led():
 
     lit = [name for action, *rest in log if action == "on" for name in rest]
     assert lit == [WINDOW, DEHUMIDIFIER]
-    assert servo.history == [35.0, 0.0, 35.0, 0.0]  # 기기와 상관없이 같은 동작
+    assert servo.history == [85.0, -20.0, 85.0, -20.0]  # 기기와 상관없이 같은 동작
     assert devices[WINDOW].state == "on" and devices[DEHUMIDIFIER].state == "off"
     for device in devices.values():
         device.close()
@@ -122,7 +122,7 @@ def test_overlapping_commands_press_one_at_a_time():
     watcher.join()
 
     assert max(max_lit) == 1  # LED(=서보 사용 중인 기기)는 한 번에 하나만
-    assert servo.history == [35.0, 0.0, 35.0, 0.0]
+    assert servo.history == [85.0, -20.0, 85.0, -20.0]
     assert devices[WINDOW].state == "off" and devices[AIR_PURIFIER].state == "on"
     for device in devices.values():
         device.close()

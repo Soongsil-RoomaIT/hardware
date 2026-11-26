@@ -147,6 +147,9 @@ def button_devices(
     **button_kwargs,
 ) -> dict:
     """패널을 공유하는 버튼 기기들을 만든다. 만든 기기는 호출한 쪽이 close 한다."""
+    # 공유 서보의 기본 이동 폭은 -20°에서 85°까지 105°다.
+    button_kwargs.setdefault("rest_angle", -20.0)
+    button_kwargs.setdefault("press_angle", 85.0)
     specs = (
         (window, ServoButtonWindow, window_initial),
         (purifier, ServoButtonPurifier, purifier_initial),
