@@ -113,7 +113,8 @@ class ServoButtonPurifier:
                     if before == self._target:
                         self._target = None
                         continue
-                    self._target = None  # Consume this request so one target cannot repeat the press.
+                    # Consume the request so the worker does not press again for the same target.
+                    self._target = None
                     self._busy = True
                 except Exception as exc:
                     self.fault = str(exc)
