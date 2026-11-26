@@ -13,6 +13,7 @@ from ..types import AIR_PURIFIER, DEHUMIDIFIER, HardwareFault
 
 class ServoButtonPurifier:
     name = AIR_PURIFIER
+    _verify_feedback_after_press = True
 
     def __init__(
         self,
@@ -112,6 +113,7 @@ class ServoButtonPurifier:
                     if before == self._target:
                         self._target = None
                         continue
+                    self._target = None  # Consume this request so one target cannot repeat the press.
                     self._busy = True
                 except Exception as exc:
                     self.fault = str(exc)
@@ -127,7 +129,11 @@ class ServoButtonPurifier:
                 self._servo.detach()
                 with self._lock:
                     self._on = not before
-                    if self._feedback is not None and self._state() != self._on:
+                    if (
+                        self._verify_feedback_after_press
+                        and self._feedback is not None
+                        and self._state() != self._on
+                    ):
                         raise HardwareFault("button press not confirmed by feedback")
             except Exception as exc:
                 with self._lock:

@@ -121,6 +121,11 @@ class HardwareBundle:
                         panel,
                         window=window_button,
                         window_initial=window_initial,
+                        window_feedback=(
+                            self._window_is_open
+                            if self.window_sensor is not None and touch_verified
+                            else None
+                        ),
                         purifier=purifier,
                         purifier_initial=purifier_initial,
                         dehumidifier=dehumidifier,
@@ -154,6 +159,9 @@ class HardwareBundle:
     def _own(self, device):
         self._stack.callback(device.close)
         return device
+
+    def _window_is_open(self) -> bool:
+        return self.window_sensor.is_open
 
     @property
     def gas_detected(self):

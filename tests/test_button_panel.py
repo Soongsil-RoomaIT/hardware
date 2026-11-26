@@ -1,4 +1,5 @@
 import threading
+import time
 
 import pytest
 from conftest import FakeServo, wait_for
@@ -173,6 +174,25 @@ def test_window_button_has_window_name():
     assert ServoButtonWindow.name == WINDOW
 
 
+def test_window_waits_for_feedback_without_pushing_twice():
+    panel, servo, _, _ = make_panel()
+    is_open = False
+    window = button_devices(panel, window=True, window_feedback=lambda: is_open, **FAST)[WINDOW]
+    try:
+        window.set(True)
+        wait_for(lambda: not window.is_moving)
+        time.sleep(0.15)  # Covers another worker poll while the physical window is still closed.
+        assert servo.history == [85.0, -20.0]
+        assert window.fault is None and not window.is_on
+
+        is_open = True
+        assert window.is_on
+        assert window.state_source == "SENSOR"
+    finally:
+        window.close()
+        panel.close()
+
+
 # --- HardwareBundle (gpiozero mock 핀) ----------------------------------------
 
 
@@ -194,6 +214,24 @@ def test_bundle_button_panel_uses_planned_pins(gpio, monkeypatch):
         assert {f"GPIO{n}" for n in used} <= opened
         assert f"GPIO{pins.DEHUMIDIFIER_SERVO}" not in opened  # 가전별 서보는 만들지 않음
         assert hw.status()["actuators"][WINDOW]["state"] == "off"
+
+
+def test_bundle_uses_touch_for_window_and_initial_state_for_purifier(gpio, monkeypatch):
+    monkeypatch.setattr("roomcare_hw.bundle.RoomSensorReader", lambda **_: _NoSensor())
+    with HardwareBundle(
+        button_panel=True,
+        window_button=True,
+        window_touch=True,
+        touch_verified=True,
+        purifier=True,
+        purifier_initial=False,
+    ) as hw:
+        touch = gpio.pin(pins.WINDOW_TOUCH)
+        touch.drive_high()
+        assert hw.actuators[WINDOW].is_on is False
+        touch.drive_low()
+        assert hw.actuators[WINDOW].is_on is True
+        assert hw.actuators[AIR_PURIFIER].is_on is False
 
 
 @pytest.mark.parametrize(

@@ -130,9 +130,15 @@ class _ButtonChannel:
 
 
 class ServoButtonWindow(ServoButtonPurifier):
-    """버튼으로 여닫는 창문 (on = 열림). 상태는 누른 횟수로 추정한다."""
+    """버튼으로 여닫는 창문 (on = 열림). 설치 확인된 센서가 있으면 그 상태를 사용한다."""
 
     name = WINDOW
+    # 창문은 버튼을 놓은 뒤에도 움직일 수 있다. 목표 확인은 실행 측의 명령 기한까지 기다린다.
+    _verify_feedback_after_press = False
+
+    @property
+    def state_source(self):
+        return "SENSOR" if self._feedback is not None else None
 
 
 def button_devices(
@@ -140,6 +146,7 @@ def button_devices(
     *,
     window: bool = False,
     window_initial: bool | None = None,
+    window_feedback=None,
     purifier: bool = False,
     purifier_initial: bool | None = None,
     dehumidifier: bool = False,
@@ -159,7 +166,10 @@ def button_devices(
     try:
         for enabled, cls, initial in specs:
             if enabled:
-                device = cls(initially_on=initial, servo=panel.channel(cls.name), **button_kwargs)
+                options = button_kwargs
+                if cls is ServoButtonWindow and window_feedback is not None:
+                    options = {**button_kwargs, "feedback": window_feedback}
+                device = cls(initially_on=initial, servo=panel.channel(cls.name), **options)
                 devices[cls.name] = device
     except BaseException:
         for device in devices.values():
