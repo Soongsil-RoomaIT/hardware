@@ -1,8 +1,10 @@
 import struct
+import sys
 import threading
 import time
 from dataclasses import asdict
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from conftest import wait_for
@@ -81,6 +83,19 @@ def test_pm_one_overall_deadline():
     with pytest.raises(IOError):
         reader.read_pm25()
     assert time.monotonic() - start < 0.2
+    reader.close()
+
+
+@pytest.mark.parametrize(("model", "use_pulseio"), [("DHT11", True), ("DHT22", False)])
+def test_dht_capture_mode_by_model(monkeypatch, model, use_pulseio):
+    pin = object()
+    device_factory = Mock()
+    monkeypatch.setitem(sys.modules, "board", SimpleNamespace(D4=pin))
+    monkeypatch.setitem(sys.modules, "adafruit_dht", SimpleNamespace(**{model: device_factory}))
+
+    reader = DHTReader(model=model)
+
+    device_factory.assert_called_once_with(pin, use_pulseio=use_pulseio)
     reader.close()
 
 
